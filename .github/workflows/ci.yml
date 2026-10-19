@@ -55,8 +55,12 @@ jobs:
       - name: Test
         run: npm test -- --ci
 
+  # Job name `bundle` is a stable, required-status-check-friendly name.
+  # Renaming it means updating branch protection in the same change.
+  # Runs `expo export` for all platforms without native build credentials:
+  # no Xcode signing, no Android keystore, no EAS token. Catches Metro
+  # bundling regressions that typecheck alone cannot detect.
   bundle:
-    name: Bundle
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +70,19 @@ jobs:
           node-version: 20
           cache: npm
 
+      # npm is cached by setup-node above. Metro keeps its transform cache in
+      # the OS temp dir; its entries are content-keyed, so any previous run's
+      # cache is safe to restore.
+      - name: Cache Metro
+        uses: actions/cache@v4
+        with:
+          path: /tmp/metro-cache
+          key: ${{ runner.os }}-metro-${{ hashFiles('package-lock.json') }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-metro-${{ hashFiles('package-lock.json') }}-
+            ${{ runner.os }}-metro-
+
       - run: npm ci
 
-      - name: Bundle for Android, iOS and web
+      - name: Export bundles (android, ios, web)
         run: npx expo export --platform android --platform ios --platform web
