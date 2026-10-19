@@ -1,204 +1,207 @@
 import React from "react";
-import { fireEvent, render } from "@testing-library/react-native";
-import { Linking } from "react-native";
+import { Alert, Linking } from "react-native";
+import { act, fireEvent, render } from "@testing-library/react-native";
+import * as Clipboard from "expo-clipboard";
 
 import { ScannerScreen } from "./ScannerScreen";
 import { ThemeProvider } from "../theme/ThemeProvider";
 
-type BarcodeScannedHandler = (args: { data: string }) => void;
+type ScanHandler = ((event: { data: string }) => void) | undefined;
 
-const barcodeScannedHandlers = new Set<BarcodeScannedHandler>();
+// The camera is replaced by a stub that exposes its current scan handler, so
+// tests can "scan" a code and check whether scanning is paused (no handler).
+let mockOnBarcodeScanned: ScanHandler;
+let mockPermission: { granted: boolean } | null;
+const mockRequestPermission = jest.fn();
 
 jest.mock("expo-camera", () => ({
-  CameraView: (props: { onBarcodeScanned?: BarcodeScannedHandler }) => {
-    if (props.onBarcodeScanned) {
-      barcodeScannedHandlers.add(props.onBarcodeScanned);
-    }
+  CameraView: (props: { onBarcodeScanned: ScanHandler }) => {
+    mockOnBarcodeScanned = props.onBarcodeScanned;
     return null;
   },
-  useCameraPermissions: () => [{ granted: true }, jest.fn()],
-  __simulateBarcodeScan: (data: string) => {
-    for (const handler of barcodeScannedHandlers) {
-      handler({ data });
-    }
-  },
-  __clearBarcodeScannedHandlers: () => {
-    barcodeScannedHandlers.clear();
-  },
+  useCameraPermissions: () => [mockPermission, mockRequestPermission],
 }));
 
 jest.mock("expo-clipboard", () => ({
-  getStringAsync: jest.fn().mockResolvedValue(""),
+  getStringAsync: jest.fn(),
 }));
 
 jest.mock("react-native-safe-area-context", () => ({
   SafeAreaView: ({ children }: { children: React.ReactNode }) => children,
 }));
 
-jest.mock("react-native", () => {
-  const actual = jest.requireActual("react-native");
-  return {
-    ...actual,
-    Linking: {
-      openURL: jest.fn().mockResolvedValue(undefined),
-      addEventListener: jest.fn(),
-      removeEventListener: jest.fn(),
-    },
-  };
-});
-
-const { Linking: MockLinking } = jest.requireMock("react-native");
-const {
-  __simulateBarcodeScan: simulateBarcodeScan,
-  __clearBarcodeScannedHandlers: clearBarcodeScannedHandlers,
-} = jest.requireMock("expo-camera");
-
 const navigation = {
   replace: jest.fn(),
   goBack: jest.fn(),
-} as any;
+} as unknown as React.ComponentProps<typeof ScannerScreen>["navigation"];
 
-function renderScreen(permission = { granted: true }) {
-  (jest.requireMock("expo-camera").useCameraPermissions as jest.Mock).mockReturnValue([
-    permission,
-    jest.fn(),
-  ]);
+const RETRY_MS = 2500;
+const PLACEHOLDER = "https://mindvault.app/resources/…";
 
-  return render(
-    <ThemeProvider>
-      <ScannerScreen navigation={navigation} />
-    </ThemeProvider>,
-  );
-}
+let alertSpy: jest.SpyInstance;
+let openURLSpy: jest.SpyInstance;
 
 beforeEach(() => {
-  jest.clearAllMocks();
-  clearBarcodeScannedHandlers();
-  MockLinking.openURL.mockClear();
+  jest.useFakeTimers();
+  mockOnBarcodeScanned = undefined;
+  mockPermission = { granted: true };
+  alertSpy = jest.spyOn(Alert, "alert").mockImplementation(() => {});
+  openURLSpy = jest.spyOn(Linking, "openURL").mockResolvedValue(true);
 });
 
 afterEach(() => {
   jest.useRealTimers();
+  jest.clearAllMocks();
+  jest.restoreAllMocks();
 });
 
-describe("ScannerScreen interaction tests", () => {
-  it("navigates to ResourceDetail for a valid resource scan", () => {
-    const screen = renderScreen();
+async function renderScreen() {
+  const screen = render(
+    <ThemeProvider>
+      <ScannerScreen navigation={navigation} />
+    </ThemeProvider>
+  );
+  // Let ThemeProvider finish loading the saved theme inside act().
+  await act(async () => {});
+  return screen;
+}
 
-    simulateBarcodeScan("mindvault://resources/abc123");
+function scan(data: string) {
+  expect(mockOnBarcodeScanned).toBeDefined();
+  act(() => mockOnBarcodeScanned?.({ data }));
+}
 
-    expect(navigation.replace).toHaveBeenCalledWith("ResourceDetail", {
-      resourceId: "abc123",
-    });
-  });
+/** Presses one of the buttons passed to the most recent Alert.alert call. */
+function pressAlertButton(text: string) {
+  const buttons = alertSpy.mock.lastCall?.[2] as { text: string; onPress?: () => void }[];
+  act(() => buttons.find((button) => button.text === text)?.onPress?.());
+}
 
-  it("shows a retry timer for an unknown QR code and clears it", () => {
-    jest.useFakeTimers();
-    const screen = renderScreen();
-
-    simulateBarcodeScan("not-a-resource");
-
-    expect(
-      screen.getByText(
-        "Unrecognized QR code. Point at a MindVault resource code.",
-      ),
-    ).toBeTruthy();
-
-    jest.advanceTimersByTime(2500);
-
-    expect(screen.queryByText("Unrecognized QR code.")).toBeFalsy();
-  });
-
-  it("does not leak the retry timer on unmount", () => {
-    jest.useFakeTimers();
-    const screen = renderScreen();
-
-    simulateBarcodeScan("not-a-resource");
-
-    screen.unmount();
-
-    jest.advanceTimersByTime(2500);
-    expect(screen.queryByText("Unrecognized QR code.")).toBeFalsy();
-  });
-
-  it("prompts to open an external URL for http(s) scans", () => {
-    const screen = renderScreen();
-
-    simulateBarcodeScan("https://example.com");
-
-    expect(MockLinking.openURL).not.toHaveBeenCalled();
-
-    fireEvent.press(screen.getByText("Open"));
-
-    expect(MockLinking.openURL).toHaveBeenCalledWith("https://example.com");
-    expect(navigation.goBack).toHaveBeenCalled();
-  });
-
-  it("cancels the external URL prompt without opening", () => {
-    const screen = renderScreen();
-
-    simulateBarcodeScan("https://example.com");
-
-    fireEvent.press(screen.getByText("Cancel"));
-
-    expect(MockLinking.openURL).not.toHaveBeenCalled();
-    expect(navigation.replace).not.toHaveBeenCalled();
-  });
-
-  it("navigates for a valid pasted resource link", () => {
-    (jest.requireMock("expo-clipboard").getStringAsync as jest.Mock).mockResolvedValueOnce(
-      "mindvault://resources/xyz",
-    );
-
-    const screen = renderScreen();
-
-    fireEvent.press(screen.getByText("Paste Link Instead"));
-    fireEvent.press(screen.getByText("Paste from Clipboard"));
-    fireEvent.press(screen.getByText("Go"));
-
-    expect(navigation.replace).toHaveBeenCalledWith("ResourceDetail", {
-      resourceId: "xyz",
-    });
-  });
-
-  it("shows an error for an invalid pasted link", () => {
-    const screen = renderScreen();
-
-    fireEvent.press(screen.getByText("Paste Link Instead"));
-    fireEvent.changeText(
-      screen.getByPlaceholderText("https://mindvault.app/resources/…"),
-      "not-a-resource-link",
-    );
-    fireEvent.press(screen.getByText("Go"));
-
-    expect(
-      screen.getByText(
-        "This doesn't look like a valid MindVault resource URL.",
-      ),
-    ).toBeTruthy();
-    expect(navigation.replace).not.toHaveBeenCalled();
-  });
-
-  it("shows the grant-permission screen when camera is denied", () => {
-    jest.useFakeTimers();
-    const screen = renderScreen({ granted: false, status: "undetermined" as any });
-
-    expect(screen.getByText("Camera access is required")).toBeTruthy();
-    expect(screen.getByText("Grant Permission")).toBeTruthy();
-
-    fireEvent.press(screen.getByText("Grant Permission"));
+describe("ScannerScreen permission states", () => {
+  it("shows a waiting message while the permission is unknown", async () => {
+    mockPermission = null;
+    const screen = await renderScreen();
 
     expect(screen.getByText("Requesting camera permission…")).toBeTruthy();
+    expect(mockOnBarcodeScanned).toBeUndefined();
   });
 
-  it("opens the paste modal", () => {
-    const screen = renderScreen();
+  it("asks for camera access when the permission is denied", async () => {
+    mockPermission = { granted: false };
+    const screen = await renderScreen();
+
+    expect(screen.getByText("Camera access is required")).toBeTruthy();
+    fireEvent.press(screen.getByText("Grant Permission"));
+    expect(mockRequestPermission).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ScannerScreen scanning", () => {
+  it("navigates to the resource for a valid code and stops scanning", async () => {
+    await renderScreen();
+
+    scan("https://api.example.com/resources/abc%20123");
+
+    expect(navigation.replace).toHaveBeenCalledWith("ResourceDetail", { resourceId: "abc 123" });
+    expect(mockOnBarcodeScanned).toBeUndefined();
+  });
+
+  it("shows an inline error for an unknown code, then resumes after the retry timer", async () => {
+    const screen = await renderScreen();
+
+    scan("just some text");
+
+    expect(screen.getByText("Unrecognized QR code. Point at a MindVault resource code.")).toBeTruthy();
+    expect(mockOnBarcodeScanned).toBeUndefined();
+
+    act(() => jest.advanceTimersByTime(RETRY_MS - 1));
+    expect(screen.queryByText(/Unrecognized QR code/)).toBeTruthy();
+
+    act(() => jest.advanceTimersByTime(1));
+    expect(screen.queryByText(/Unrecognized QR code/)).toBeNull();
+    expect(mockOnBarcodeScanned).toBeDefined();
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
+  it("clears the retry timer on unmount", async () => {
+    const screen = await renderScreen();
+
+    scan("just some text");
+    expect(jest.getTimerCount()).toBe(1);
+
+    screen.unmount();
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  it("asks before opening an external URL and opens it on confirm", async () => {
+    await renderScreen();
+
+    scan("https://example.com/page");
+
+    expect(alertSpy).toHaveBeenCalledWith("Open URL", "https://example.com/page", expect.any(Array));
+    pressAlertButton("Open");
+    expect(openURLSpy).toHaveBeenCalledWith("https://example.com/page");
+    expect(navigation.goBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("resumes scanning when the external URL prompt is cancelled", async () => {
+    await renderScreen();
+
+    scan("https://example.com/page");
+    expect(mockOnBarcodeScanned).toBeUndefined();
+
+    pressAlertButton("Cancel");
+    expect(mockOnBarcodeScanned).toBeDefined();
+    expect(openURLSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("ScannerScreen paste flow", () => {
+  it("fills the field from the clipboard and navigates on Go", async () => {
+    (Clipboard.getStringAsync as jest.Mock).mockResolvedValue("  mindvault://resources/xyz  ");
+    const screen = await renderScreen();
 
     fireEvent.press(screen.getByText("Paste Link Instead"));
+    await act(async () => {
+      fireEvent.press(screen.getByText("Paste from Clipboard"));
+    });
 
-    expect(screen.getByText("Enter Resource Link")).toBeTruthy();
-    expect(
-      screen.getByPlaceholderText("https://mindvault.app/resources/…"),
-    ).toBeTruthy();
+    expect(screen.getByPlaceholderText(PLACEHOLDER).props.value).toBe("mindvault://resources/xyz");
+    fireEvent.press(screen.getByText("Go"));
+    expect(navigation.replace).toHaveBeenCalledWith("ResourceDetail", { resourceId: "xyz" });
+  });
+
+  it("keeps Go disabled until something is entered", async () => {
+    const screen = await renderScreen();
+
+    fireEvent.press(screen.getByText("Paste Link Instead"));
+    fireEvent.press(screen.getByText("Go"));
+
+    expect(navigation.replace).not.toHaveBeenCalled();
+    expect(screen.queryByText("Enter or paste a MindVault resource URL.")).toBeNull();
+  });
+
+  it("closes the modal and prompts before opening a pasted external URL", async () => {
+    const screen = await renderScreen();
+
+    fireEvent.press(screen.getByText("Paste Link Instead"));
+    fireEvent.changeText(screen.getByPlaceholderText(PLACEHOLDER), "https://example.com/page");
+    fireEvent.press(screen.getByText("Go"));
+
+    expect(alertSpy).toHaveBeenCalledWith("Open URL", "https://example.com/page", expect.any(Array));
+    pressAlertButton("Open");
+    expect(openURLSpy).toHaveBeenCalledWith("https://example.com/page");
+    expect(navigation.replace).not.toHaveBeenCalled();
+  });
+
+  it("clears the typed value when the modal is cancelled", async () => {
+    const screen = await renderScreen();
+
+    fireEvent.press(screen.getByText("Paste Link Instead"));
+    fireEvent.changeText(screen.getByPlaceholderText(PLACEHOLDER), "draft");
+    fireEvent.press(screen.getByText("Cancel"));
+    fireEvent.press(screen.getByText("Paste Link Instead"));
+
+    expect(screen.getByPlaceholderText(PLACEHOLDER).props.value).toBe("");
   });
 });
