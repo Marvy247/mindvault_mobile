@@ -22,13 +22,12 @@ import { ErrorBanner } from "../components/ErrorBanner";
 import { ResourceCard } from "../components/ResourceCard";
 import { SkeletonCard } from "../components/SkeletonCard";
 import type { RootStackParamList } from "../navigation";
-import type { CatalogFilters, Resource, VerificationStatus } from "../types";
+import type { CatalogFilters, CatalogSort, Resource, VerificationStatus } from "../types";
 import { spacing } from "../theme";
 import type { ThemeColors } from "../theme";
 import { useAppTheme } from "../theme/ThemeProvider";
 import {
   INVALID_PRICE_RANGE_MESSAGE,
-  filterByPriceRange,
   parsePriceRange,
 } from "../utils/priceRange";
 
@@ -41,6 +40,7 @@ interface PersistedFilters {
   resourceType: ResourceTypeFilter;
   minPrice: string;
   maxPrice: string;
+  sort: CatalogSort;
 }
 
 interface CatalogScreenProps {
@@ -52,6 +52,7 @@ type ResourceTypeFilter = "all" | "file" | "link";
 
 const DEFAULT_VERIFICATION: VerificationFilter = "all";
 const DEFAULT_RESOURCE_TYPE: ResourceTypeFilter = "all";
+const DEFAULT_SORT: CatalogSort = "newest";
 
 const VERIFICATION_OPTIONS: { value: VerificationFilter; label: string }[] = [
   { value: "all", label: "All" },
@@ -64,6 +65,13 @@ const RESOURCE_TYPE_OPTIONS: { value: ResourceTypeFilter; label: string }[] = [
   { value: "all", label: "All" },
   { value: "file", label: "File" },
   { value: "link", label: "Link" },
+];
+
+const SORT_OPTIONS: { value: CatalogSort; label: string }[] = [
+  { value: "newest", label: "Newest" },
+  { value: "price_asc", label: "Price: Low to high" },
+  { value: "price_desc", label: "Price: High to low" },
+  { value: "title", label: "Title" },
 ];
 
 function formatLastUpdated(value: Date): string {
@@ -79,6 +87,7 @@ const DEFAULT_PERSISTED_FILTERS: PersistedFilters = {
   resourceType: DEFAULT_RESOURCE_TYPE,
   minPrice: "",
   maxPrice: "",
+  sort: DEFAULT_SORT,
 };
 
 /**
@@ -98,6 +107,7 @@ function sanitizePersistedFilters(raw: unknown): PersistedFilters {
   const isResourceType = RESOURCE_TYPE_OPTIONS.some(
     (option) => option.value === saved.resourceType,
   );
+  const isSort = SORT_OPTIONS.some((option) => option.value === saved.sort);
 
   return {
     search: typeof saved.search === "string" ? saved.search : "",
@@ -109,6 +119,7 @@ function sanitizePersistedFilters(raw: unknown): PersistedFilters {
       : DEFAULT_RESOURCE_TYPE,
     minPrice: typeof saved.minPrice === "string" ? saved.minPrice : "",
     maxPrice: typeof saved.maxPrice === "string" ? saved.maxPrice : "",
+    sort: isSort ? (saved.sort as CatalogSort) : DEFAULT_SORT,
   };
 }
 
@@ -327,6 +338,9 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
   const [registryCount, setRegistryCount] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
+  // Price bounds are debounced like search so typing "12.50" sends one request.
+  const [debouncedMinPrice, setDebouncedMinPrice] = useState("");
+  const [debouncedMaxPrice, setDebouncedMaxPrice] = useState("");
   const [verification, setVerification] =
     useState<VerificationFilter>(DEFAULT_VERIFICATION);
   const [resourceType, setResourceType] = useState<ResourceTypeFilter>(
@@ -334,6 +348,7 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
   );
   const [minPrice, setMinPrice] = useState("");
   const [maxPrice, setMaxPrice] = useState("");
+  const [sort, setSort] = useState<CatalogSort>(DEFAULT_SORT);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -359,6 +374,9 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
         setResourceType(restored.resourceType);
         setMinPrice(restored.minPrice);
         setMaxPrice(restored.maxPrice);
+        setDebouncedMinPrice(restored.minPrice);
+        setDebouncedMaxPrice(restored.maxPrice);
+        setSort(restored.sort);
         filtersRestored.current = true;
         setIsRestoring(false);
       }
@@ -369,14 +387,14 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
   useEffect(() => {
     async function persistFilters() {
       if (!filtersRestored.current) return;
-      const data: PersistedFilters = { search, verification, resourceType, minPrice, maxPrice };
+      const data: PersistedFilters = { search, verification, resourceType, minPrice, maxPrice, sort };
       try {
         await AsyncStorage.setItem(CATALOG_FILTERS_KEY, JSON.stringify(data));
       } catch {
       }
     }
     persistFilters();
-  }, [search, verification, resourceType, minPrice, maxPrice]);
+  }, [search, verification, resourceType, minPrice, maxPrice, sort]);
 
   const requestIdRef = useRef(0);
 
@@ -401,6 +419,12 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
     }
     if (resourceType !== DEFAULT_RESOURCE_TYPE) {
       filters.resourceType = resourceType;
+    }
+    if (sort !== DEFAULT_SORT) filters.sort = sort;
+    const range = parsePriceRange(debouncedMinPrice, debouncedMaxPrice);
+    if (!range.isInvalid) {
+      if (range.min !== null) filters.minPrice = String(range.min);
+      if (range.max !== null) filters.maxPrice = String(range.max);
     }
 
     try {
@@ -431,12 +455,20 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
         setRefreshing(false);
       }
     }
-  }, [debouncedSearch, verification, resourceType, isRestoring]);
+  }, [debouncedSearch, verification, resourceType, debouncedMinPrice, debouncedMaxPrice, sort, isRestoring]);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [search]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedMinPrice(minPrice);
+      setDebouncedMaxPrice(maxPrice);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [minPrice, maxPrice]);
 
   useEffect(() => {
     void loadData();
@@ -453,7 +485,8 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
     verification !== DEFAULT_VERIFICATION ||
     resourceType !== DEFAULT_RESOURCE_TYPE ||
     minPrice.trim() !== "" ||
-    maxPrice.trim() !== "";
+    maxPrice.trim() !== "" ||
+    sort !== DEFAULT_SORT;
 
   const clearFilters = useCallback(() => {
     setSearch("");
@@ -461,16 +494,12 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
     setResourceType(DEFAULT_RESOURCE_TYPE);
     setMinPrice("");
     setMaxPrice("");
+    setSort(DEFAULT_SORT);
   }, []);
 
   const priceRange = useMemo(
     () => parsePriceRange(minPrice, maxPrice),
     [minPrice, maxPrice],
-  );
-
-  const filteredResources = useMemo(
-    () => filterByPriceRange(resources, priceRange),
-    [resources, priceRange],
   );
 
   function renderEmpty() {
@@ -494,7 +523,7 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
     <SafeAreaView style={shared.screen} edges={["top", "left", "right"]}>
       <StatusBar style={colorScheme === "dark" ? "light" : "dark"} />
       <FlatList
-        data={loading ? null : filteredResources}
+        data={loading ? null : resources}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
@@ -550,6 +579,26 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
             />
 
             <View style={styles.filters}>
+              <View style={styles.filterGroup}>
+                <Text style={styles.filterLabel}>Sort</Text>
+                <View style={styles.chipRow} accessibilityRole="radiogroup" accessibilityLabel="Sort catalog">
+                  {SORT_OPTIONS.map((option) => {
+                    const active = sort === option.value;
+                    return (
+                      <Pressable
+                        key={option.value}
+                        onPress={() => setSort(option.value)}
+                        style={[styles.chip, active && styles.chipActive]}
+                        accessibilityRole="radio"
+                        accessibilityState={{ checked: active }}
+                        accessibilityLabel={option.label}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>{option.label}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </View>
               <View style={styles.filterGroup}>
                 <Text style={styles.filterLabel}>Verification</Text>
                 <View
@@ -680,7 +729,7 @@ export function CatalogScreen({ navigation }: CatalogScreenProps) {
               {!loading && resources.length > 0 ? (
                 <View style={styles.resultsRow}>
                   <Text style={styles.resultsCount}>
-                    Showing {filteredResources.length} of {resources.length}{" "}
+                    Showing {resources.length}{" "}
                     resource
                     {resources.length === 1 ? "" : "s"}
                   </Text>

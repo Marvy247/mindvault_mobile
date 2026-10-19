@@ -56,6 +56,28 @@ afterEach(() => {
 });
 
 describe("CatalogScreen search debounce", () => {
+  it("renders every supported sort chip", async () => {
+    const screen = renderCatalog();
+    await waitFor(() => expect(mockedFetchCatalog).toHaveBeenCalled());
+    for (const label of ["Newest", "Price: Low to high", "Price: High to low", "Title"]) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
+  });
+
+  it("sends sorting and price bounds to the server without filtering its response locally", async () => {
+    mockedFetchCatalog.mockResolvedValue([makeResource("r1", "Server result")]);
+    const screen = renderCatalog();
+    await waitFor(() => expect(mockedFetchCatalog).toHaveBeenCalledTimes(1));
+
+    fireEvent.press(screen.getByLabelText("Price: High to low"));
+    fireEvent.changeText(screen.getByLabelText("Minimum price"), "5");
+
+    await waitFor(() =>
+      expect(mockedFetchCatalog).toHaveBeenLastCalledWith({ sort: "price_desc", minPrice: "5" })
+    );
+    expect(screen.getByText("Server result")).toBeTruthy();
+  });
+
   it("does not refetch on every keystroke, only after typing pauses", async () => {
     const { getByLabelText } = render(
       <ThemeProvider>
@@ -90,6 +112,28 @@ describe("CatalogScreen search debounce", () => {
     expect(mockedFetchCatalog).toHaveBeenCalledWith(
       expect.objectContaining({ search: "stella" }),
     );
+  });
+
+  it("waits for a pause before refetching when price bounds are typed", async () => {
+    const screen = renderCatalog();
+    await waitFor(() => expect(mockedFetchCatalog).toHaveBeenCalledTimes(1));
+    mockedFetchCatalog.mockClear();
+
+    const input = screen.getByLabelText("Maximum price");
+    for (const value of ["1", "12", "12.", "12.5", "12.50"]) {
+      fireEvent.changeText(input, value);
+    }
+
+    act(() => {
+      jest.advanceTimersByTime(200);
+    });
+    expect(mockedFetchCatalog).not.toHaveBeenCalled();
+
+    act(() => {
+      jest.advanceTimersByTime(200);
+    });
+    await waitFor(() => expect(mockedFetchCatalog).toHaveBeenCalledTimes(1));
+    expect(mockedFetchCatalog).toHaveBeenCalledWith({ maxPrice: "12.5" });
   });
 });
 
