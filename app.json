@@ -48,6 +48,14 @@
       "apiUrl": "http://localhost:4021",
       "network": "testnet",
       "networkPassphrase": "Test SDF Network ; September 2015"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/anonymous",
+      "runtimeVersion": {
+        "policy": "appVersion"
+      },
+      "channels": ["preview", "production"],
+      "checkAutomatically": "ON_LOAD"
     }
   }
 }
