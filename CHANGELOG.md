@@ -1,11 +1,5 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
+All notable changes to this project are documented in [GitHub Releases](https://github.com/mind-vault-1/mindvault_mobile/releases).
 
-## [1.0.0](https://github.com/mind-vault-1/mindvault_mobile/tag/v1.0.0)
-
-### 1.0.0 - 2026-10-19
-
-#### Features
-
-* Initial release
+This file is maintained automatically by [release-please](https://github.com/googleapis/release-please); do not edit it by hand. Conventional commit titles (`feat:`, `fix:`, `chore:`, etc.) are grouped into releases per the config in `release-please-config.json`.
