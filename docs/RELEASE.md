@@ -51,6 +51,31 @@ returning or logging normalized messages. Do not log credentials, request
 headers, signed payloads, or raw response bodies. Direct `console.*` calls are
 reserved for the safe logger.
 
+## Release automation
+
+Releases are automated with [release-please](https://github.com/googleapis/release-please)
+driven by conventional commits. The workflow lives in
+`.github/workflows/release.yml` and runs only on `main`.
+
+- `release-please-config.json` configures a `node` release-type, bumps
+  `package.json` and `app.json`, and writes `CHANGELOG.md`. Component-in-tag is
+  disabled because this is a single-package repo.
+- A release PR is created automatically when conventional commits land on `main`.
+  Merging it bumps versions, updates the changelog, and creates a GitHub release.
+- Store builds are still managed via EAS (see "Build profiles" above). No EAS
+  token or other secrets are needed beyond the default `GITHUB_TOKEN`.
+
+### Dry run
+
+```sh
+npx release-please --release-type node --package-name mindvault-mobile --dry-run
+```
+
+### Rollback
+
+Revert the release merge commit on `main`. Store builds already distributed are
+not affected; the next EAS build picks up the reverted `app.json` version.
+
 ## Dynamic type
 
 Keep React Native text scaling enabled. Avoid fixed-height text containers and

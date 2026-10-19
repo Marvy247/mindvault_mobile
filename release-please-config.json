@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/release-please.json",
+  "packages": {
+    "mindvault-mobile": {
+      "release-type": "node",
+      "extra-files": ["app.json"],
+      "changelog-path": "CHANGELOG.md",
+      "disable-component-in-tag": true
+    }
+  }
+}
